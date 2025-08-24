@@ -112,4 +112,114 @@ OUTPUT_DIR="runs" uv run python main.py
 - 可视化结果：
 <img src="http://andy-blog.oss-cn-beijing.aliyuncs.com/2025-08-24-%E5%8F%AF%E8%A7%86%E5%8C%96%E7%BB%93%E6%9E%9C.png" alt="可视化结果">
 
-如需扩展抽取要素（例如将“影像/心电图”拆分为“影像学”和“心电图”，或为“用药/治疗”补充频次/疗程等属性），或希望以命令行参数自定义输出目录、模型、提示词等，欢迎提出需求，我可以协助完善脚本。
+## 新场景如何配置（快速适配指南）
+
+当你需要将本示例适配到新的业务场景（例如急性脑卒中、感染科发热就诊、肿瘤随访等），按以下步骤操作。
+
+**步骤 1：定义标签清单**
+- 列出你希望抽取的“类别”清单（即 extraction_class），并明确每类常见属性。
+- 示例（发热就诊场景，可按需增删）：
+  - 症状：时间、持续时间、伴随症状、程度、诱因、缓解/加重因素
+  - 体征：体温、脉搏、呼吸、血压、体格所见（部位、范围、程度）
+  - 实验室检查：项目、数值、单位、参考范围、结论
+  - 影像/检查：部位、所见、程度、分型/分期
+  - 诊断：性质（初步/明确）、分型、分期
+  - 用药/治疗：药物、剂量、频次、途径、时机
+  - 医嘱/随访：时间、项目、频率
+
+**步骤 2：修改提示词 prompt_description**
+- 打开 main.py，更新 prompt 中的类别与“输出格式要求”。
+- 保留以下硬性规则，能显著减少解析报错：
+  - 抽取片段必须取自原文，禁止改写；
+  - 不同实体片段不要重叠；
+  - attributes 必须是对象（dict），不能是数组；
+  - 同类多项必须拆成多条 extraction（如多种药物、多条检查）。
+
+**步骤 3：准备少量 few-shot 示例（强烈建议）**
+- 在 examples 中新增 1–2 个 ExampleData，让模型学习你的标签与属性粒度。
+- 注意：
+  - 使用关键字参数创建 Extraction（避免版本差异导致报错）：
+    - extraction_class="类别名"
+    - extraction_text="原文片段"
+    - attributes={...} 或 None
+  - 多药物/多检查要“拆开成多条”，每条的 attributes 为一个字典。
+
+最小示例（粘贴到 main.py 的 examples 列表里，示例为“发热就诊”）
+```python
+lx.data.ExampleData(
+    text="患者，男，30岁，发热2天，最高体温39.2℃，伴咳嗽、咽痛。体温38.8℃。血常规：白细胞12.3×10^9/L（升高）。给予对乙酰氨基酚0.5g口服，每6小时一次。",
+    extractions=[
+        lx.data.Extraction(
+            extraction_class="症状",
+            extraction_text="发热2天，最高体温39.2℃，伴咳嗽、咽痛",
+            attributes={"持续时间": "2天", "最高体温": "39.2℃", "伴随症状": "咳嗽、咽痛"},
+        ),
+        lx.data.Extraction(
+            extraction_class="体征",
+            extraction_text="体温38.8℃",
+            attributes={"体温": "38.8℃"},
+        ),
+        lx.data.Extraction(
+            extraction_class="实验室检查",
+            extraction_text="白细胞12.3×10^9/L（升高）",
+            attributes={"项目": "白细胞", "数值": "12.3", "单位": "×10^9/L", "结论": "升高"},
+        ),
+        # 用药需拆成独立条目，attributes 必须是字典
+        lx.data.Extraction(
+            extraction_class="用药/治疗",
+            extraction_text="对乙酰氨基酚0.5g口服，每6小时一次",
+            attributes={"药物": "对乙酰氨基酚", "剂量": "0.5g", "途径": "口服", "频次": "q6h"},
+        ),
+    ],
+)
+```
+
+**步骤 4：替换待抽取文本**
+- 将 input_text 替换为你的新场景原始文本即可，也可批量改为文档列表。
+
+**步骤 5：运行与验证**
+```bash
+uv run python main.py
+```
+- 结果会输出到 outputs/run-YYYYMMDD-HHMMSS/ 下的 JSONL 与 HTML。
+- 若模型仍偶发将 attributes 生成为数组（list），可参考下方“可选增强（后处理兜底）”。
+
+可选增强（强烈推荐）
+1) 打开 schema 约束
+   - 在 lx.extract 中设置 use_schema_constraints=True（本示例已开启）。
+2) 增加一个“多项拆分”的 few-shot 示例
+   - 专门示范把多个药物或检查拆分成多条 extraction。
+3) 后处理兜底：将 attributes 为 list 的条目拆分成多条
+   - 在调用 visualize/保存前，加一道轻量后处理，避免解析 ValueError：
+
+```python
+def split_list_attributes(result_doc):
+    # 只示范单文档结果的最小处理；可按需扩展到批量
+    fixed = []
+    for item in result_doc.extractions:
+        attrs = getattr(item, "attributes", None)
+        if isinstance(attrs, list) and len(attrs) > 0 and all(isinstance(x, dict) for x in attrs):
+            # 将一条合并的“同类多项”拆为多条
+            for sub in attrs:
+                fixed.append(
+                    lx.data.Extraction(
+                        extraction_class=item.extraction_class,
+                        extraction_text=item.extraction_text,  # 或按需截取更精确的原文片段
+                        attributes=sub,
+                    )
+                )
+        else:
+            fixed.append(item)
+    result_doc.extractions = fixed
+    return result_doc
+
+# 使用示例：
+result = lx.extract(...、use_schema_constraints=True、...)
+result = split_list_attributes(result)
+```
+
+**常见坑位与建议**
+- attributes 必须为字典：不要输出数组；同类多项请拆分为多条 extraction。
+- 原文对齐：extraction_text 必须是原文片段，避免“意译/改写”，可提升对齐质量。
+- 逐步迁移：先用 1–2 个短文本验证格式无误，再扩大到更复杂的临床记录。
+- 模型与网关：新场景不影响网关配置，仍按项目“配置环境变量”章节设置即可。
