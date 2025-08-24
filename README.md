@@ -184,7 +184,7 @@ uv run python main.py
 - 结果会输出到 outputs/run-YYYYMMDD-HHMMSS/ 下的 JSONL 与 HTML。
 - 若模型仍偶发将 attributes 生成为数组（list），可参考下方“可选增强（后处理兜底）”。
 
-可选增强（强烈推荐）
+**可选增强（强烈推荐）**
 1) 打开 schema 约束
    - 在 lx.extract 中设置 use_schema_constraints=True（本示例已开启）。
 2) 增加一个“多项拆分”的 few-shot 示例
